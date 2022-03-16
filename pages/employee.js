@@ -1,4 +1,12 @@
 import React from "react";
+import { ethers } from 'ethers'
+import Web3Modal from "web3modal"
+
+import {
+  daoaddress
+} from '../config'
+
+import Dao from '../artifacts/contracts/DAO.sol/DAO.json'
 
 const employee = () => {
   return (
@@ -9,7 +17,7 @@ const employee = () => {
       </div>
 
   )
-  
+
 };
 
 export default employee;
