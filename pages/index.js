@@ -5,7 +5,7 @@ import { useRouter } from 'next/router'
 
 export default function Home() {
   const { isAuthenticated, logout, chainId } = useMoralis();
-  const { switchNetwork } = useChain();
+  const { switchNetwork,account} = useChain();
   const [rinkeby, setRinkeby] = useState(false);
   const router = useRouter()
   useEffect(() => {
@@ -14,9 +14,10 @@ export default function Home() {
     } else if (chainId === "0xa869") {
       setRinkeby(false);
     }
-    console.log(chainId);
+    
   }, [chainId]);
-
+ 
+ 
   return (
     <div className="w-full flex flex-col">
       {isAuthenticated ? (
