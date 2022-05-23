@@ -1,13 +1,18 @@
 // SPDX-License-Identifier: AGPL-3.0
 pragma solidity ^0.8.0;
 
-import "./helpers/ReentrancyGuard.sol";
+import '@openzeppelin/contracts/security/ReentrancyGuard.sol';
+import '@openzeppelin/contracts/access/Ownable.sol';
 
-contract DAO is ReentrancyGuard {
+contract DAO is Ownable, ReentrancyGuard {
+
+    struct EmployeeForm {
+        string id;
+        uint nonce;
+    }
     struct CompanyInfo {
         uint256 initializedAt;
         uint256 companyId;
-        uint256 proposalCreatorTokenRate;
         address owner;
         string companyName;
         bool active;
@@ -20,34 +25,36 @@ contract DAO is ReentrancyGuard {
         address creator;
         bool active;
     }
-    address private admin ;
     uint256 index = 1;
-    uint256 constant CONSTANT_TOKEN_AMOUNT = 10**18;
     mapping(uint256 => CompanyInfo) public companyDescription; // start from 1
     mapping(address => mapping(uint256 => bool)) public isEmployee; // checks for employee of a spesific company
-    mapping(uint256 => mapping(address => uint256)) public eveTokenOfCompany; // checks for an employee evetoken for the company
+    mapping(address => mapping(uint256 => bool)) public formerEmployee;
+    mapping(uint256 => mapping(address => uint256)) public votedProposals; // checks for an employee votes for the companys polls
     mapping(uint256 => uint256) public proposalsCreated; // proposals created for a company
     mapping(uint256 => uint256) public onGoingProposals; // proposals ongoing for a company
-    mapping(address => ProposalInfo[]) public allProposals; // allproposals of an employee
+    mapping(address => ProposalInfo[]) public allProposals; // allproposals of a company
     uint256 companyRegistered; // to keep track of all registered companies
-    constructor() {
-      admin = msg.sender;
+
+    mapping(uint256 => mapping(bytes32 => address)) private approvedHashes;
+
+    function setHashes(EmployeeForm[] calldata employeeForm, uint256 _companyIndex) external {
+      require(companyDescription[_companyIndex].owner == msg.sender, "only authorized");
+
+      for (uint i=0; i <= employeeForm.length; i++) {
+        bytes32 hashedForm = _getMessageHash(employeeForm[i].id, employeeForm[i].nonce);
+        if (approvedHashes[_companyIndex][hashedForm] != address(0)) continue;
+        approvedHashes[_companyIndex][hashedForm] = address(this);
+      }
     }
 
-    function setProposalCreatorTokenRate(uint256 _proposalCreatorTokenRate, uint256 _companyIndex) external {
-       require(msg.sender == companyDescription[_companyIndex].owner, "!owner");
-       companyDescription[_companyIndex].proposalCreatorTokenRate = _proposalCreatorTokenRate; // 10000/10000 is 1
-    }
-
-    function signCompany(string memory _name) external {
-        // modifier here
+    function signCompany(string memory _name, address _companyRepresenter) external onlyOwner {
         require(companyDescription[index].companyId == 0); // not initialized before
+        require(_companyRepresenter != address(0));
 
         companyDescription[index] = CompanyInfo({
             initializedAt: block.timestamp,
             companyId: index,
-            proposalCreatorTokenRate: 1500,
-            owner: msg.sender,
+            owner: _companyRepresenter,
             companyName: _name,
             active: true
         });
@@ -55,17 +62,27 @@ contract DAO is ReentrancyGuard {
         companyRegistered++;
     }
 
-    function signEmployee(uint256 _companyIndex, address _employee) external {
+    function signEmployee(uint256 _companyIndex, string memory _id, uint _nonce) external {
+       bytes32 _hash = _getMessageHash(_id, _nonce);
+       require(approvedHashes[_companyIndex][_hash] == address(this));
         require(
-            companyDescription[_companyIndex].owner == msg.sender,
-            "only authorized"
-        );
-        require(
-            isEmployee[_employee][_companyIndex] == false,
+            isEmployee[msg.sender][_companyIndex] == false,
             "already employee"
         );
-        require(_employee != address(0));
-        isEmployee[_employee][_companyIndex] = true;
+        require(msg.sender != address(0));
+        isEmployee[msg.sender][_companyIndex] = true;
+        approvedHashes[_companyIndex][_hash] == address(0);
+    }
+
+    function kickEmployee(uint256 _companyIndex, string memory _id, uint _nonce) external {
+      require(companyDescription[_companyIndex].owner == msg.sender, "only authorized");
+      bytes32 _hash = _getMessageHash(_id, _nonce);
+      require(approvedHashes[_companyIndex][_hash] != address(0), "not an employee");
+
+      address employee = approvedHashes[_companyIndex][_hash];
+      approvedHashes[_companyIndex][_hash] = address(this);
+      isEmployee[employee][_companyIndex] = false; // fire
+      formerEmployee[employee][_companyIndex] = true;
     }
 
     function createProposalFromCompany(
@@ -87,31 +104,12 @@ contract DAO is ReentrancyGuard {
         onGoingProposals[_companyIndex]++;
     }
 
-    function createProposalFromEmployee(
-        uint256 _companyIndex,
-        uint256 _deadLine,
-        uint8 _inputTargets
-    ) external {
-        require(isEmployee[msg.sender][_companyIndex] == true, "!employee");
-        require(block.timestamp < _deadLine, "!time");
-
-        uint8[] memory array = new uint8[](_inputTargets);
-        for (uint256 i; i < _inputTargets; i++) {
-            array[i] = 0;
-        }
-        allProposals[msg.sender].push(
-            ProposalInfo(block.timestamp, _deadLine, 0, array, msg.sender, true)
-        );
-        proposalsCreated[_companyIndex]++;
-        onGoingProposals[_companyIndex]++;
-    }
-
     function submitEmployeeVote(
         uint256 _companyIndex,
         address _proposalCreator,
         uint256 _proposalIndex,
         uint256 _input
-    ) external nonReentrant {
+    ) external  {
         require(isEmployee[msg.sender][_companyIndex] == true, "!employee");
         require(
             allProposals[_proposalCreator][_proposalIndex].active == true,
@@ -119,22 +117,18 @@ contract DAO is ReentrancyGuard {
         );
         require(block.timestamp <= allProposals[_proposalCreator][_proposalIndex].deadLine);
         allProposals[_proposalCreator][_proposalIndex].inputTargets[_input]++;
-        allProposals[_proposalCreator][_proposalIndex].totalVoted += CONSTANT_TOKEN_AMOUNT;
-        eveTokenOfCompany[_companyIndex][msg.sender] += CONSTANT_TOKEN_AMOUNT;
+        allProposals[_proposalCreator][_proposalIndex].totalVoted++;
+        votedProposals[_companyIndex][msg.sender]++;
     }
-    function finishEmployeeProposal(
-        uint256 _companyIndex,
-        address _proposalCreator,
-        uint256 _proposalIndex
-    ) external {
-      require(
-          allProposals[_proposalCreator][_proposalIndex].active == true,
-          "!finishedAlready"
-      );
-        require(allProposals[_proposalCreator][_proposalIndex].creator == msg.sender || msg.sender == admin, "!onlyCreator");
-        require(block.timestamp >= allProposals[_proposalCreator][_proposalIndex].deadLine);
-        allProposals[_proposalCreator][_proposalIndex].active == false;
-        onGoingProposals[_companyIndex] --;
-        eveTokenOfCompany[_companyIndex][msg.sender] = (allProposals[_proposalCreator][_proposalIndex].totalVoted * (companyDescription[_companyIndex].proposalCreatorTokenRate)/10000) + CONSTANT_TOKEN_AMOUNT;
+
+
+    function _getMessageHash(
+        string memory _id,    // id number of the company of the employee
+        uint _nonce           // random number that company will assign to employee
+    ) internal view returns (bytes32) {
+        return keccak256(abi.encodePacked(_id, _nonce, address(this)));
     }
+
+    // [{("A",1), ("B",2)}]
+
 }
